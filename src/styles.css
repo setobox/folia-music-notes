@@ -1,0 +1,8 @@
+@import "tailwindcss" source(none);
+@import "./kit/kit.css";
+@import "./ui/musicNotes.css";
+@source "./kit";
+@source "./ui";
+
+/* Everything is installed inside the home-tab shadow root supplied by Folium. */
+:host { font-family: var(--folium-font, sans-serif); }
