@@ -1,0 +1,71 @@
+name: Release music notes
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Verify release version
+        run: |
+          version=$(node -p "require('./mod.json').version")
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME must match mod.json version $version."
+            exit 1
+          fi
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm run test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mod-zip
+          path: release/music-notes-*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: mod-zip
+          path: release
+      - name: Publish installable ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          asset="music-notes-${tag#v}.zip"
+          test -s "release/$asset"
+          if release=$(gh release view "$tag" --json isDraft,assets); then
+            if jq -e '.isDraft == false' <<< "$release" > /dev/null; then
+              jq -e --arg name "$asset" 'any(.assets[]; .name == $name and .state == "uploaded")' <<< "$release" > /dev/null
+              exit 0
+            fi
+          else
+            gh release create "$tag" --verify-tag --draft --title "音乐笔记 $tag" \
+              --notes "下载 \`$asset\`，拖入 Folia 的「设置 → 模组」即可安装。"
+          fi
+          gh release upload "$tag" "release/$asset" --clobber
+          gh release edit "$tag" --draft=false
