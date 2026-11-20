@@ -1,144 +1,188 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Download, FileUp, Plus, RefreshCw } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button, Chips, Group, PageHeader, Row, Status, Tabs, TextField } from '../kit';
+import { Button, Status } from '../kit';
+import { LoadingBars } from '../kit/LoadingBars';
 import { SettingsKitThemeContext, settingsTokens } from '../kit/kitTheme';
 import { kitMotionTokens, useKitReducedMotion } from '../kit/motion';
 import type { FoliumTheme } from '../../types/folium';
-import { filterNotes, nextBookmarkId, NOTES_LIMITS, NotesCapacityError, songKey, type NoteSong } from '../core';
-import { normalizeTags, tagKey } from '../core/notesModel';
+import { songKey, type NoteSong } from '../core';
+import { tagKey } from '../core/notesModel';
 import type { MusicNotesPort } from '../hostTypes';
+import type { Notebook } from '../notebook';
+import { NotebookActions } from './NotebookActions';
 import MusicNoteEditor from './MusicNoteEditor';
-import MusicNotesImport from './MusicNotesImport';
+import { NoteList } from './NoteList';
 import { useMusicNotesLibrary } from './useMusicNotesLibrary';
-import './musicNotes.css';
 
-// A self-contained mod page: the host supplies only playback, accounts, language and theme.
-const TAGS_PER_PAGE = 32;
-
+// The host owns navigation; the mod keeps its own master/detail selection and a shared notebook.
 export interface MusicNotesWindowProps {
+    notebook: Notebook;
     port: MusicNotesPort;
+    playbackSelection: { key: string | null };
     locale: string;
     theme: FoliumTheme;
-    requestId: number;
-    requestedSong: NoteSong | null;
-    onClose: () => void;
+    notify: (message: string) => void;
 }
 
-export function MusicNotesWindow({ port, locale, theme, requestId, requestedSong, onClose }: MusicNotesWindowProps) {
+// A new revision acknowledges a completed write, even if a restored note has a different device's clock.
+function SaveStatus({ notebook, song, revision }: { notebook: Notebook; song: NoteSong; revision: number }) {
     const { t } = useTranslation();
-    const library = useMusicNotesLibrary(requestId, requestedSong, onClose);
-    const [tab, setTab] = useState('collection');
-    const [query, setQuery] = useState('');
-    const [selectedTagKey, setSelectedTagKey] = useState('');
-    const [tagPage, setTagPage] = useState(0);
-    const [limit, setLimit] = useState(50);
-    const [, updateHost] = useState(0);
-    const fileInput = useRef<HTMLInputElement>(null);
-    const downloadLink = useRef<HTMLAnchorElement>(null);
-    const download = useRef<{ url: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+    const status = notebook.status(song);
+    const previous = useRef(revision);
+    const [justSaved, setJustSaved] = useState(false);
+    useEffect(() => {
+        if (previous.current === revision) return;
+        previous.current = revision;
+        setJustSaved(revision > 0);
+        if (!revision) return;
+        const timer = window.setTimeout(() => setJustSaved(false), 60_000);
+        return () => window.clearTimeout(timer);
+    }, [revision]);
+    return <div role="status" className="text-xs text-[color:var(--st-t2)]">
+        {status === 'error' ? <Button variant="quiet" onClick={() => { void notebook.retry(song).catch(() => undefined); }}>{t('musicNotes.saveRetry')}</Button>
+            : status === 'saving' ? t('musicNotes.saving') : status === 'saved' && justSaved ? t('musicNotes.saved') : null}
+    </div>;
+}
+
+export function MusicNotesWindow({ notebook, port, playbackSelection, locale, theme, notify }: MusicNotesWindowProps) {
+    const { t } = useTranslation();
+    const { notes, tagOrder, ready, error } = useMusicNotesLibrary(notebook);
+    const [, updatePlayer] = useState(0);
+    useEffect(() => port.subscribe(() => updatePlayer(version => version + 1)), [port]);
+    const displayedSong = port.currentSong();
+    const displayedKey = displayedSong && songKey(displayedSong);
+    const playbackState = port.playbackState();
+    const current = playbackState === 'playing' ? displayedSong : null;
+    useLayoutEffect(() => {
+        if (playbackState !== 'paused') playbackSelection.key = playbackState === 'playing' ? displayedKey : null;
+    }, [playbackState, displayedKey, playbackSelection]);
+    const [choice, setChoice] = useState<NoteSong | null>(null);
+    const [detail, setDetail] = useState(false);
+    const [importRequest, setImportRequest] = useState(0);
+    const [focusRequest, setFocusRequest] = useState(0);
+    const bodyRef = useRef<HTMLTextAreaElement>(null);
+    const wantsFocus = useRef(false);
+    const frame = useRef<HTMLDivElement>(null);
+    const lastDetailControl = useRef<HTMLElement | null>(null);
+    const returnToList = useRef(false);
+    const enterDetail = useRef(false);
+    const songs = useMemo(() => new Map(notes.map(note => [note.key, note])), [notes]);
+    const chosenKey = choice && songKey(choice);
+    const chosen = chosenKey ? songs.get(chosenKey)?.song ??
+        (chosenKey === displayedKey ? displayedSong : null) : null;
+    // Reopening the tab can resume the song paused here, even before the first note is written.
+    const pausedSelection = playbackState === 'paused' && playbackSelection.key === displayedKey ? displayedSong : null;
+    const latest = useMemo(() => notes.reduce<(typeof notes)[number] | undefined>((last, note) =>
+        !last || note.updatedAt > last.updatedAt || (note.updatedAt === last.updatedAt && note.key.localeCompare(last.key) < 0)
+            ? note : last, undefined), [notes]);
+    const selected = chosen ?? current ?? pausedSelection ?? latest?.song ?? null;
+    const listCurrent = current ?? (displayedKey && !songs.has(displayedKey) ? pausedSelection : null);
+    const key = selected && songKey(selected);
+    const revision = key ? songs.get(key)?.revision : undefined;
+    const previousSavedKey = useRef<string | null>(null);
+    const hadNotes = useRef(false);
+    const selectedRef = useRef(selected);
+    selectedRef.current = selected;
+    // Current playback can change outside the page; commit the previous song before its editor leaves.
+    useEffect(() => {
+        const previous = selectedRef.current;
+        return () => { if (previous) void notebook.flush(previous).catch(() => undefined); };
+    }, [key, notebook]);
+    const tags = useMemo(() => {
+        const names = new Map<string, string>();
+        for (const note of notes) for (const name of note.tags) {
+            const id = tagKey(name);
+            if (!names.has(id)) names.set(id, name);
+        }
+        const ordered: string[] = [];
+        for (const key of tagOrder) {
+            const name = names.get(key);
+            if (name !== undefined) { ordered.push(name); names.delete(key); }
+        }
+        return [...ordered, ...names.values()];
+    }, [notes, tagOrder]);
+    const moments = useMemo(() => notes.reduce((total, note) => total + note.bookmarks.length, 0), [notes]);
+    const select = (song: NoteSong, focusText: boolean, openDetail: boolean) => {
+        if (selected && songKey(song) !== key) void notebook.flush(selected).catch(() => undefined);
+        setChoice(song);
+        if (openDetail) { enterDetail.current = !detail; setDetail(true); }
+        if (focusText) { wantsFocus.current = true; setFocusRequest(value => value + 1); }
+    };
+    useLayoutEffect(() => {
+        const page = frame.current;
+        const previous = previousSavedKey.current;
+        previousSavedKey.current = key && songs.has(key) ? key : null;
+        const emptied = hadNotes.current && songs.size === 0;
+        hadNotes.current = songs.size > 0;
+        if (!page || !ready) return;
+        const list = page.querySelector<HTMLElement>('.music-notes-list');
+        const root = page.getRootNode() as Document | ShadowRoot;
+        const documentFocus = page.ownerDocument.activeElement;
+        const focusWasLost = (!root.activeElement || root.activeElement === page.ownerDocument.body) &&
+            (!documentFocus || documentFocus === page.ownerDocument.body || (root instanceof ShadowRoot && documentFocus === root.host));
+        // A deleted note can unmount the focused confirmation button, even if this song is still playing.
+        if (focusWasLost && (emptied || (previous && !songs.has(previous) &&
+            lastDetailControl.current && !lastDetailControl.current.isConnected))) {
+            if (list) {
+                returnToList.current = true;
+                if (detail) setDetail(false);
+            } else {
+                const next = bodyRef.current ?? page.querySelector<HTMLButtonElement>('.music-notes-detail button');
+                next?.focus();
+            }
+        }
+        if (!detail && returnToList.current) {
+            returnToList.current = false;
+            const target = list?.querySelector<HTMLButtonElement>('button[data-song-key][aria-pressed="true"]') ??
+                list?.querySelector<HTMLInputElement>('input');
+            target?.focus();
+        } else if (wantsFocus.current && bodyRef.current) {
+            bodyRef.current.focus(); wantsFocus.current = false;
+        } else if (detail && enterDetail.current) {
+            const back = page.querySelector<HTMLButtonElement>('.music-notes-back button');
+            if (back?.getClientRects().length) back.focus();
+        }
+        enterDetail.current = false;
+    }, [focusRequest, key, ready, detail, songs]);
     const reduced = useKitReducedMotion();
-    const locked = library.busy || !library.ready || Boolean(library.confirmation);
-    const current = port.currentSong();
-    const canBookmark = Boolean(current && library.song && songKey(current) === songKey(library.song));
-    const tags = useMemo(() => normalizeTags(library.notes.flatMap(note => note.tags)).sort((a, b) => a.localeCompare(b)), [library.notes]);
-    const selectedTag = useMemo(() => selectedTagKey ? tags.find(value => tagKey(value) === selectedTagKey) : undefined, [selectedTagKey, tags]);
-    const lastTagPage = Math.max(0, Math.ceil(tags.length / TAGS_PER_PAGE) - 1);
-    const currentTagPage = Math.min(tagPage, lastTagPage);
-    const pageTags = tags.slice(currentTagPage * TAGS_PER_PAGE, (currentTagPage + 1) * TAGS_PER_PAGE);
-    const visible = useMemo(() => filterNotes(library.notes, query, selectedTag), [library.notes, query, selectedTag]);
-
-    useEffect(() => port.subscribe(() => updateHost(value => value + 1)), [port]);
-    useEffect(() => { if (requestedSong) setTab('collection'); }, [requestId, requestedSong]);
-    useEffect(() => { if (selectedTagKey && !selectedTag) setSelectedTagKey(''); }, [selectedTagKey, selectedTag]);
-    useEffect(() => () => {
-        if (download.current) { clearTimeout(download.current.timer); URL.revokeObjectURL(download.current.url); }
-    }, []);
-
-    const exportBackup = () => library.run(async (db, signal) => {
-        const json = await db.exportBackup();
-        if (signal.aborted || !downloadLink.current) return;
-        if (download.current) { clearTimeout(download.current.timer); URL.revokeObjectURL(download.current.url); }
-        const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-        downloadLink.current.href = url;
-        downloadLink.current.download = `folia-music-notes-${new Date().toISOString().slice(0, 10)}.json`;
-        downloadLink.current.click();
-        download.current = { url, timer: setTimeout(() => { URL.revokeObjectURL(url); download.current = null; }, 1000) };
-        library.setNotice({ key: 'musicNotes.exported', tone: 'ok' });
-    });
-    const importBackup = (file: File) => library.run(async (db, signal) => {
-        if (file.size > NOTES_LIMITS.backupCharacters * 4) throw new NotesCapacityError();
-        const json = await file.text();
-        signal.throwIfAborted();
-        const result = await db.importBackup(json);
-        if (signal.aborted) return;
-        await library.refresh(db); library.setNotice({ key: 'musicNotes.imported', tone: 'ok', values: result });
-    });
     const style = { ...settingsTokens(theme.isDaylight, theme), ...kitMotionTokens(reduced), '--text-primary': theme.primaryColor } as CSSProperties;
-
-    return (
-        <SettingsKitThemeContext.Provider value={{ isDaylight: theme.isDaylight, theme }}>
-            <div className="st-window music-notes-page" style={style} lang={locale} aria-busy={library.busy}>
-                <PageHeader title={t('musicNotes.title')} contents={[]} activeId={null} onSelect={() => undefined} summary={t('musicNotes.privateHint')} closeLabel={t('musicNotes.close')} onClose={library.close} />
-                <Tabs label={t('musicNotes.sections')} tabs={['collection', 'importTab', 'backup'].map((key, index) => ({ id: ['collection', 'import', 'backup'][index], label: t(`musicNotes.${key}`) }))} activeId={tab} onSelect={setTab} className="px-4 pt-1 md:px-8" />
-                <div className="music-notes-content st-scroll">
-                    {library.confirmation && <Group def={{ id: 'music-notes-confirm', titleKey: `musicNotes.${library.confirmation.kind}Title` }}>
-                        <Row notice={t(`musicNotes.${library.confirmation.kind}Description`)}>
-                            <Button disabled={library.busy} onClick={library.cancel}>{t('musicNotes.cancel')}</Button>
-                            <Button variant="primary" disabled={library.busy} onClick={library.confirm}>{t(library.confirmation.kind === 'remove' ? 'musicNotes.confirmRemove' : 'musicNotes.discard')}</Button>
-                        </Row>
-                    </Group>}
-                    {library.notice && <div className="music-notes-notice"><Status tone={library.notice.tone}>{t(library.notice.key, library.notice.values)}</Status></div>}
-                    <div hidden={tab !== 'collection'} className="music-notes-columns" data-music-notes="collection">
-                        <section>
-                            <Group def={{ id: 'music-notes-library', titleKey: 'musicNotes.collection' }}>
-                                <Row label={t('musicNotes.current')} hint={current ? `${current.title} · ${current.artist}` : t('musicNotes.noCurrent')}>
-                                    <Button icon={Plus} disabled={locked || !current} onClick={() => { if (current) library.select(current); }}>{t('musicNotes.current')}</Button>
-                                </Row>
-                                <Row label={t('musicNotes.search')}><TextField value={query} disabled={!library.ready} placeholder={t('musicNotes.searchHint')} onChange={value => { setQuery(value); setLimit(50); }} /></Row>
-                                {tags.length > 0 && <Row label={t('musicNotes.filterTag')} hint={selectedTag} below={<Chips items={pageTags.map(value => ({
-                                    id: tagKey(value), label: value, checked: value === selectedTag,
-                                    onChange: checked => { setSelectedTagKey(checked ? tagKey(value) : ''); setLimit(50); },
-                                }))} />}>
-                                    {lastTagPage > 0 && <>
-                                        <Button disabled={currentTagPage === 0} onClick={() => setTagPage(currentTagPage - 1)}>{t('musicNotes.previousTags')}</Button>
-                                        <Button disabled={currentTagPage === lastTagPage} onClick={() => setTagPage(currentTagPage + 1)}>{t('musicNotes.nextTags')}</Button>
-                                    </>}
-                                </Row>}
-                                <Row label={t('musicNotes.count', { count: visible.length })}>
-                                    <Button icon={RefreshCw} disabled={locked} onClick={library.reload}>{t('musicNotes.refresh')}</Button>
-                                </Row>
-                                {!library.ready && !library.notice && <Row label={<Status>{t('musicNotes.loading')}</Status>} />}
-                                {library.ready && visible.length === 0 && <Row label={t(library.notes.length ? 'musicNotes.noMatches' : 'musicNotes.empty')} hint={t('musicNotes.emptyHint')} />}
-                                {visible.slice(0, limit).map(note => <Row key={note.key} label={note.song.title} hint={[note.song.artist, note.tags.join(' · ')].filter(Boolean).join(' — ')} tag={library.song && songKey(library.song) === note.key ? t('musicNotes.selected') : undefined} disabled={locked} onClick={() => library.select(note.song)} />)}
-                                {visible.length > limit && <Row><Button onClick={() => setLimit(value => value + 50)}>{t('musicNotes.showMore')}</Button></Row>}
-                            </Group>
-                        </section>
-                        {library.song ? <MusicNoteEditor key={`${songKey(library.song)}:${library.editorVersion}`} song={library.song} draft={library.draft} dirty={library.dirty} saved={Boolean(library.original)} busy={locked} canBookmark={canBookmark} onChange={library.setDraft} tagInput={library.tagInput} nextTags={library.nextTags} onTagInputChange={library.setTagInput} onSave={draft => { void library.save(draft); }} onRemove={library.remove} onPlay={() => {
-                            void library.run(async (_db, signal) => {
-                                if (library.song && !await port.play(library.song) && !signal.aborted) library.setNotice({ key: 'musicNotes.unavailable', tone: 'warn' });
-                            });
-                        }} onBookmark={() => library.setDraft(draft => ({ ...draft, bookmarks: [...draft.bookmarks, { id: nextBookmarkId(draft.bookmarks), positionSeconds: port.currentTime(), text: '' }] }))} onSeek={seconds => { if (library.song) port.seek(library.song, seconds); }} /> : <Group def={{ id: 'music-notes-start', titleKey: 'musicNotes.editor' }}><Row label={t('musicNotes.chooseSong')} hint={t('musicNotes.chooseSongHint')} /></Group>}
-                    </div>
-                    <div hidden={tab !== 'import'}><MusicNotesImport port={port} disabled={locked} onImport={playlist => library.run(async (db, signal) => {
-                        const songs = await port.readPlaylist(playlist, signal);
-                        signal.throwIfAborted();
-                        const result = await db.importSongs(songs);
-                        if (signal.aborted) return;
-                        await library.refresh(db); library.setNotice({ key: 'musicNotes.imported', tone: 'ok', values: result });
-                    })} /></div>
-                    <div hidden={tab !== 'backup'} data-music-notes="backup">
-                        <Group def={{ id: 'music-notes-backup', titleKey: 'musicNotes.backup' }} foot={t('musicNotes.backupHint')}>
-                            <Row label={t('musicNotes.export')} hint={t('musicNotes.exportHint')}><Button icon={Download} disabled={locked} onClick={() => { void exportBackup(); }}>{t('musicNotes.export')}</Button></Row>
-                            <Row label={t('musicNotes.restore')} hint={t('musicNotes.restoreHint')}><Button icon={FileUp} disabled={locked} onClick={() => fileInput.current?.click()}>{t('musicNotes.restore')}</Button></Row>
-                        </Group>
-                    </div>
-                    <input ref={fileInput} hidden type="file" accept="application/json,.json" aria-label={t('musicNotes.restore')} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void importBackup(file); }} />
-                    <a ref={downloadLink} hidden aria-hidden="true" />
+    const first = !notes.length;
+    const openImport = () => setImportRequest(value => value + 1);
+    return <SettingsKitThemeContext.Provider value={{ isDaylight: theme.isDaylight, theme }}>
+        <div ref={frame} className="st-window music-notes-page relative flex size-full min-h-0 flex-col overflow-hidden bg-[var(--st-win)] text-[color:var(--st-t1)]" lang={locale} style={style}>
+            <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-[var(--st-line)] px-4 py-3 md:px-8">
+                <div className="flex flex-wrap items-center gap-x-3">
+                    <h1 className="text-xl font-semibold">{t('musicNotes.title')}</h1>
+                    {ready && selected && <SaveStatus key={key} notebook={notebook} song={selected} revision={revision ?? 0} />}
                 </div>
-            </div>
-        </SettingsKitThemeContext.Provider>
-    );
+                <div className="ml-auto flex items-center gap-2">
+                    <span className="text-right text-xs tabular-nums text-[color:var(--st-t2)]">{ready && t('musicNotes.stats', { songs: notes.length, moments })}</span>
+                    <NotebookActions {...{ notebook, port, notify, importRequest }} />
+                </div>
+            </header>
+            {!ready ? <div className="grid flex-1 place-items-center">{error ? <Status tone="error">{t('musicNotes.failed')}</Status> :
+                <span role="status" className="text-[color:var(--st-t2)]"><LoadingBars size={20} /><span className="sr-only">{t('musicNotes.loading')}</span></span>}</div> :
+            <div className="music-notes-layout min-h-0 flex-1" data-first={first || undefined} data-detail={detail || undefined}>
+                {!first && <NoteList {...{ notes, tags, port, select, notebook, notify }} current={listCurrent}
+                    paused={playbackState === 'paused'} selection={key} />}
+                <section key="detail" className="music-notes-detail st-scroll min-h-0 min-w-0 overflow-y-auto p-4 md:px-8" onFocusCapture={event => {
+                    lastDetailControl.current = event.target;
+                    if (first) setDetail(true);
+                }}>
+                    {!first && <div className="music-notes-back mb-3"><Button variant="quiet" icon={ChevronLeft} onClick={() => {
+                        if (selected) void notebook.flush(selected).catch(() => undefined);
+                        returnToList.current = true;
+                        setDetail(false);
+                    }}>{t('musicNotes.back')}</Button></div>}
+                    {selected ? <MusicNoteEditor key={key} {...{ notebook, port, notify, tags, first, bodyRef }} song={selected}
+                        revision={revision} playbackState={key === displayedKey ? playbackState : 'stopped'} onImport={openImport} /> :
+                        <div className="space-y-4 text-center"><p className="text-sm text-[color:var(--st-t2)]">{t('musicNotes.noCurrent')}</p>
+                            <Button onClick={openImport}>{t('musicNotes.importPlaylist')}</Button></div>}
+                </section>
+            </div>}
+        </div>
+    </SettingsKitThemeContext.Provider>;
 }
 
 export default MusicNotesWindow;

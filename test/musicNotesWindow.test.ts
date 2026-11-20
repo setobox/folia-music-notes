@@ -3,190 +3,245 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMusicNotesRepository, emptyNoteDraft, type MusicNotesRepository, type NoteSong } from '../src/core';
+import { Notebook } from '../src/notebook';
 import type { FoliumTheme } from '../types/folium';
-import type * as MusicNotes from '../src/core';
-import type { MusicNotesRepository, NoteSong } from '../src/core/notesTypes';
 import type { MusicNotesPort } from '../src/hostTypes';
-import { createMusicNotesRepository } from '../src/core/notesDatabase';
-import { emptyNoteDraft } from '../src/core/notesModel';
 import MusicNotesWindow from '../src/ui/MusicNotesWindow';
+import { musicNotesResources } from '../src/locales';
 
-// Exercises the real settings kit in a shadow root, with real persistence and only host edges replaced.
-const host = vi.hoisted(() => ({
-    repository: vi.fn<() => MusicNotesRepository>(),
-    readPlaylist: vi.fn<MusicNotesPort['readPlaylist']>(),
-    play: vi.fn<MusicNotesPort['play']>(),
-    close: vi.fn(),
-    translate: (key: string) => key,
-    playing: { source: 'online:test', id: 'playing', title: 'Playing song', artist: 'Artist' },
-}));
-vi.mock('../src/core', async importOriginal => ({
-    ...await importOriginal<typeof MusicNotes>(), createMusicNotesRepository: host.repository,
-}));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: host.translate }) }));
+// Drive the page in a shadow root against an isolated copy of the production note database.
+const i18n = createInstance();
+await i18n.init({ resources: musicNotesResources, lng: 'zh-CN', initAsync: false });
 vi.mock('../src/useReducedMotionFor', () => ({ useReducedMotionFor: () => true }));
 
-const theme: FoliumTheme = { name: 'Test', backgroundColor: '#111111', primaryColor: '#eeeeee', accentColor: '#eeeeee', secondaryColor: '#aaaaaa', fontStyle: 'sans', animationIntensity: 'calm', isDaylight: false };
+const song: NoteSong = { source: 'online:test', id: 'one', title: 'Playing song', artist: 'Artist' };
+const second = { ...song, id: 'two', title: 'Second song' };
+const theme: FoliumTheme = { name: 'Test', backgroundColor: '#111111', primaryColor: '#eeeeee', accentColor: '#eeeeee',
+    secondaryColor: '#aaaaaa', fontStyle: 'sans', animationIntensity: 'calm', isDaylight: false };
+const readPlaylist = vi.fn<MusicNotesPort['readPlaylist']>();
 const port: MusicNotesPort = {
-    currentSong: () => host.playing,
-    currentTime: () => 12,
-    playbackState: () => 'playing', isPlaying: () => true, cover: async () => null,
-    pause: vi.fn(), playAt: vi.fn(async () => false),
-    subscribe: () => () => undefined,
-    play: host.play,
-    seek: vi.fn(),
+    currentSong: () => song, currentTime: () => 12, isPlaying: () => true, playbackState: () => 'playing',
+    pause: vi.fn(), cover: async () => null,
+    subscribe: () => () => undefined, play: async () => false, playAt: vi.fn(async () => false), seek: vi.fn(),
     accounts: () => [{ source: 'test', id: 'account', name: 'Test account' }],
-    playlists: () => Promise.resolve([{ source: 'test', id: 'playlist', accountId: 'account', name: 'Saved playlist' }]),
-    readPlaylist: host.readPlaylist,
+    playlists: async () => [{ source: 'test', id: 'playlist', accountId: 'account', name: 'Saved playlist' }],
+    readPlaylist,
 };
-let root: Root;
-let container: HTMLDivElement;
-let surface: ShadowRoot;
-let repository: MusicNotesRepository;
-let databaseName: string;
+let root: Root, surface: ShadowRoot, db: MusicNotesRepository, notebook: Notebook, databaseName: string;
+let playbackSelection: { key: string | null };
+const notify = vi.fn();
 
-const deferred = <T>() => {
-    let resolve!: (value: T) => void;
-    const promise = new Promise<T>(done => { resolve = done; });
-    return { promise, resolve };
+const button = (name: string, scope: ParentNode = surface) => {
+    const result = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(element =>
+        !element.closest('[inert]') && (element.getAttribute('aria-label') === name || element.textContent?.trim() === name));
+    if (!result) throw new Error(`Missing button: ${name}`);
+    return result;
 };
-const accessibleLabel = (element: HTMLElement) => element.getAttribute('aria-label')
-    ?? element.getAttribute('aria-labelledby')?.split(' ').map(id => surface.querySelector(`[id="${id}"]`)?.textContent).join(' ')
-    ?? element.textContent?.trim();
-const button = (label: string): HTMLButtonElement => {
-    const match = [...surface.querySelectorAll('button')].find(item => accessibleLabel(item) === label || item.textContent?.trim() === label);
-    if (!match) throw new Error(`Missing button: ${label}`);
-    return match;
-};
-const click = async (label: string) => { await act(async () => { button(label).click(); }); };
-const tagInput = () => surface.querySelector<HTMLInputElement>('input[placeholder="musicNotes.tagPlaceholder"]');
-const typeInto = async (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
-    await act(async () => {
-        const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-};
-const enterTag = async (value: string) => {
-    const element = tagInput();
-    if (!element) throw new Error('Missing tag input');
-    await typeInto(element, value);
-};
-const ready = async () => {
-    await act(async () => {
-        root.render(createElement(MusicNotesWindow, { port, locale: 'zh-CN', theme, requestId: 1, requestedSong: host.playing, onClose: host.close }));
-    });
-    await vi.waitFor(() => expect(tagInput()).not.toBeNull());
-};
+const click = (name: string, scope?: ParentNode) => act(async () => { button(name, scope).click(); });
+const press = (element: HTMLElement, key: string) => act(async () => {
+    element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, composed: true }));
+});
+const typeInto = (field: HTMLInputElement | HTMLTextAreaElement, value: string) => act(async () => {
+    const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+});
+const openPage = () => act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(MusicNotesWindow, {
+    port, locale: 'zh-CN', theme, notebook, playbackSelection, notify,
+}))));
+async function ready() {
+    notebook = new Notebook(db);
+    playbackSelection = { key: null };
+    await vi.waitFor(() => expect(notebook.getSnapshot().ready).toBe(true));
+    await openPage();
+}
 
-beforeEach(async () => {
+beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-    host.play.mockResolvedValue(false);
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
     databaseName = `notes-window-${crypto.randomUUID()}`;
-    repository = createMusicNotesRepository({ databaseName });
-    await repository.save(host.playing, { ...emptyNoteDraft(), note: 'Original memory' }, null);
-    host.repository.mockReturnValue(repository);
-    container = document.createElement('div'); document.body.append(container);
-    surface = container.attachShadow({ mode: 'open' });
+    db = createMusicNotesRepository({ databaseName });
+    surface = document.body.appendChild(document.createElement('div')).attachShadow({ mode: 'open' });
     root = createRoot(surface);
 });
 afterEach(async () => {
     await act(async () => { root.unmount(); });
-    container.remove(); repository.close(); await Dexie.delete(databaseName);
-    vi.restoreAllMocks();
+    await notebook?.dispose();
+    surface.host.remove(); db.close(); await Dexie.delete(databaseName);
+    vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 
 describe('music notes mod user flows', () => {
-    it('locks mutations during the complete playlist read and preserves drafts across page changes', async () => {
-        const read = deferred<NoteSong[]>();
-        const imported: NoteSong = { source: 'online:test', id: 'imported', title: 'Imported song', artist: 'Singer' };
-        host.readPlaylist.mockReturnValue(read.promise);
-        await ready(); await enterTag('pending tag');
-        await click('musicNotes.importTab'); await click('Test account'); await click('Saved playlist');
-        await click('Saved playlist');
-        expect(button('musicNotes.import').disabled).toBe(true);
-        await click('Saved playlist');
-        await click('musicNotes.import');
-        expect(surface.querySelector('[data-music-notes=import] [role=status]')?.textContent).toContain('musicNotes.importing');
-        expect(host.readPlaylist).toHaveBeenCalledOnce();
-        expect(button('musicNotes.play').disabled).toBe(true);
-        expect(button('musicNotes.save').disabled).toBe(true);
-        await click('musicNotes.play'); await click('musicNotes.save'); await click('musicNotes.close');
-        expect(host.play).not.toHaveBeenCalled(); expect(host.close).not.toHaveBeenCalled();
-        await act(async () => { read.resolve([imported, host.playing]); });
-        await vi.waitFor(async () => expect(await repository.get(imported)).toBeDefined());
-        await click('musicNotes.collection');
-        await vi.waitFor(() => expect(surface.textContent).toContain('Imported song'));
-        expect((await repository.get(host.playing))?.note).toBe('Original memory');
-        expect((await repository.get(host.playing))?.tags).toEqual([]);
-        expect(tagInput()?.value).toBe('pending tag');
-    });
-
-    it('saves typed tags directly and keeps matching songs filtered across case changes', async () => {
-        await repository.save({ ...host.playing, id: 'second', title: 'Second song' }, { ...emptyNoteDraft(), tags: ['BASS'] }, null);
-        await repository.save({ ...host.playing, id: 'other', title: 'Other song' }, { ...emptyNoteDraft(), tags: ['Jazz'] }, null);
+    it('imports from a sheet and retains existing content and empty imported songs', async () => {
+        await db.save(song, { ...emptyNoteDraft(), note: 'Original memory' }, null);
+        let finishImport!: (songs: NoteSong[]) => void;
+        readPlaylist.mockReturnValue(new Promise<NoteSong[]>(resolve => { finishImport = resolve; }));
+        let accountChanged = () => {};
+        vi.spyOn(port, 'subscribe').mockImplementation(callback => { accountChanged = callback; return () => {}; });
+        const accounts = vi.spyOn(port, 'accounts');
         await ready();
-        await enterTag('夜路，bass,BASS'); await click('musicNotes.save');
-        await vi.waitFor(async () => expect((await repository.get(host.playing))?.tags).toEqual(['夜路', 'bass']));
-        await vi.waitFor(() => expect(button('musicNotes.play').disabled).toBe(false));
-        expect(tagInput()?.value).toBe('');
-        for (const unchanged of [',，、', ' BASS ']) {
-            await enterTag(unchanged);
-            expect(button('musicNotes.add').disabled).toBe(true);
-            expect(button('musicNotes.save').disabled).toBe(true);
+        const header = surface.querySelector('header')!;
+        expect(button('备份（导出）', header).querySelector('svg')).not.toBeNull();
+        const picker = vi.spyOn(surface.querySelector<HTMLInputElement>('input[type="file"]')!, 'click');
+        await click('恢复备份（导入）', header);
+        expect(picker).toHaveBeenCalledOnce();
+        expect(surface.querySelector('[role="dialog"]')).toBeNull();
+        await click('从歌单导入', header);
+        const dialog = surface.querySelector<HTMLElement>('[role="dialog"]')!;
+        for (const keys of [{ key: 'F6' }, { key: 'k', ctrlKey: true }, { key: 'k', metaKey: true }]) {
+            const event = new KeyboardEvent('keydown', { ...keys, bubbles: true, composed: true, cancelable: true });
+            expect(dialog.dispatchEvent(event)).toBe(false);
         }
-
-        const collection = surface.querySelector('[data-music-notes="collection"] > section')!;
-        const bassFilters = () => [...collection.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')]
-            .filter(chip => chip.textContent?.trim().toLowerCase() === 'bass');
-        expect(bassFilters()).toHaveLength(1);
-        await act(async () => { bassFilters()[0].click(); });
-        expect(collection.textContent).not.toContain('Other song');
-        await act(async () => { surface.querySelector<HTMLButtonElement>('[data-music-notes="tags"] [data-settings-row="bass"]')!.click(); });
-        await click('musicNotes.save');
-        await vi.waitFor(async () => expect((await repository.get(host.playing))?.tags).toEqual(['夜路']));
-        await vi.waitFor(() => expect(bassFilters()[0].textContent?.trim()).toBe('BASS'));
-        expect(bassFilters()[0].getAttribute('aria-checked')).toBe('true');
-        expect(collection.textContent).toContain('Second song');
-        expect(collection.textContent).not.toContain('Other song');
+        await click('Test account'); await click('Saved playlist');
+        accounts.mockReturnValue([{ source: 'test', id: 'different', name: 'Other account' }]);
+        await act(async () => accountChanged());
+        expect(dialog.textContent).not.toContain('Saved playlist');
+        accounts.mockRestore(); await act(async () => accountChanged());
+        await click('Test account'); await click('Test account');
+        expect(dialog.textContent).not.toContain('Saved playlist');
+        await click('Test account'); await click('Saved playlist');
+        await click('Saved playlist');
+        expect(button('导入').disabled).toBe(true);
+        await click('Saved playlist');
+        const query = surface.querySelector<HTMLInputElement>('input[placeholder="搜索歌单"]')!;
+        await typeInto(query, 'different playlist');
+        expect(button('导入').disabled).toBe(true);
+        await typeInto(query, 'Saved'); await click('导入');
+        expect(dialog.textContent).toContain('正在导入');
+        await vi.waitFor(() => expect(readPlaylist).toHaveBeenCalledOnce());
+        await act(async () => finishImport([song, second]));
+        await vi.waitFor(async () => expect((await db.get(second))?.note).toBe(''));
+        expect((await db.get(song))?.note).toBe('Original memory');
+        expect(readPlaylist).toHaveBeenCalledOnce();
     });
 
-    it('saves a personal note and a bookmark at the current position', async () => {
+    it('commits comma-separated tags, deduplicates labels, and preserves the selected filter across case changes', async () => {
+        // Leave room for “All” and the overflow button, but no individual tag.
+        vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(80);
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 40, 24));
+        await db.save(second, { ...emptyNoteDraft(), tags: ['BASS'] }, null);
+        await db.importSongs([{ ...second, id: 'three', title: 'Other song' }]);
+        await ready(); await click('新增标签');
+        const field = surface.querySelector<HTMLInputElement>('[role="combobox"]')!;
+        await typeInto(field, '夜路，bass,BASS'); await press(field, 'Enter');
+        await act(async () => {
+            await vi.waitFor(async () => expect((await db.get(song))?.tags).toEqual(['夜路', 'bass']));
+            await vi.waitFor(() => expect(surface.activeElement).toBe(button('新增标签')));
+        });
+        const filters = surface.querySelector('[aria-label="按标签筛选"]')!;
+        const trigger = button('查看全部', filters);
+        await act(async () => { trigger.focus(); trigger.click(); });
+        const panel = surface.querySelector('[role="dialog"]')!;
+        const bass = [...panel.querySelectorAll('button')].find(item => item.textContent?.trim().toLowerCase() === 'bass')!;
+        await act(async () => bass.click());
+        expect(trigger.textContent).toBe(bass.textContent);
+        await click('移除标签 bass');
+        await act(async () => {
+            await vi.waitFor(async () => expect((await db.get(song))?.tags).toEqual(['夜路']));
+        });
+        expect(trigger.getAttribute('aria-pressed')).toBe('true');
+        expect(trigger.textContent).toBe('BASS');
+        expect(surface.querySelector('aside')?.textContent).toContain('Second song');
+        expect(surface.querySelector('aside')?.textContent).not.toContain('Other song');
+        await click('全部', filters);
+        expect(trigger.textContent).toBe('查看全部');
+    });
+
+    it('keeps the first song on pause, resumes it and focuses a single mark at its current position', async () => {
+        let state: 'playing' | 'paused' = 'playing';
+        let playbackChanged = () => {};
+        vi.spyOn(port, 'subscribe').mockImplementation(callback => { playbackChanged = callback; return () => {}; });
+        vi.spyOn(port, 'playbackState').mockImplementation(() => state);
+        vi.spyOn(port, 'isPlaying').mockImplementation(() => state === 'playing');
+        vi.spyOn(port, 'pause').mockImplementation(() => { state = 'paused'; playbackChanged(); });
+        const play = vi.spyOn(port, 'play').mockImplementation(async () => { state = 'playing'; playbackChanged(); return true; });
         await ready();
-        await typeInto(surface.querySelector('textarea')!, 'Worth hearing again');
-        await click('musicNotes.bookmark');
-        await typeInto(surface.querySelector<HTMLInputElement>('input[placeholder="musicNotes.bookmarkPlaceholder"]')!, 'First chorus');
-        await click('musicNotes.save');
-        await vi.waitFor(async () => expect(await repository.get(host.playing)).toMatchObject({
+        await click('停止');
+        expect(port.pause).toHaveBeenCalledWith(song);
+        await act(async () => root.render(null));
+        await openPage();
+        expect(button('记下这个时刻').textContent).toBe('00:12');
+        await click('继续');
+        expect(play).toHaveBeenCalledWith(song);
+        expect(button('停止')).toBeDefined();
+        const current = vi.spyOn(port, 'currentSong').mockReturnValue(second);
+        await click('记下这个时刻');
+        expect(notebook.getDraft(song).bookmarks).toEqual([]);
+        current.mockRestore();
+        await click('记下这个时刻');
+        const moment = surface.querySelector<HTMLInputElement>('input[placeholder="为标记添加注释"]')!;
+        expect(surface.activeElement).toBe(moment);
+        const body = surface.querySelector<HTMLTextAreaElement>('textarea[placeholder="这首歌勾起了我的回忆..."]')!;
+        await act(async () => body.focus());
+        await typeInto(body, 'Worth hearing again');
+        expect(surface.activeElement).toBe(body);
+        await click('停止');
+        await click('记下这个时刻');
+        expect(surface.activeElement).toBe(moment);
+        await typeInto(moment, 'First chorus');
+        await act(async () => moment.blur());
+        await vi.waitFor(async () => expect(await db.get(song)).toMatchObject({
             note: 'Worth hearing again', bookmarks: [{ positionSeconds: 12, text: 'First chorus' }],
         }));
+        await click('00:12', surface.querySelector('[data-music-notes="bookmarks"]')!);
+        expect(port.playAt).toHaveBeenCalledWith(song, 12);
+        expect(notify).toHaveBeenCalledWith('暂时无法播放这首歌。');
+        await act(async () => {
+            await notebook.importSongs([second]);
+            await notebook.remove(song, (await db.get(song))!.revision);
+            root.render(null);
+        });
+        await openPage();
+        const pausedGroup = [...surface.querySelectorAll('aside section')].find(group => group.querySelector('h3')?.textContent === '已暂停');
+        const pausedRow = pausedGroup?.querySelector('button');
+        expect(pausedRow?.textContent).toContain(song.title);
+        await act(async () => pausedRow!.click());
+        await click('继续');
+        expect(surface.querySelector('aside')?.textContent).not.toContain('已暂停');
     });
 
-    it('keeps the draft after a revision conflict and requires explicit deletion', async () => {
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-        await ready(); await enterTag('keep my draft');
-        const original = (await repository.get(host.playing))!;
-        await repository.save(host.playing, { ...emptyNoteDraft(), note: 'Changed elsewhere' }, original.revision);
-        await click('musicNotes.save');
-        await vi.waitFor(() => expect(surface.textContent).toContain('musicNotes.conflict'));
-        expect((await repository.get(host.playing))?.note).toBe('Changed elsewhere');
-        expect(surface.textContent).toContain('keep my draft');
-        await click('musicNotes.refresh'); await click('musicNotes.discard');
-        await vi.waitFor(() => expect(surface.querySelector('textarea')?.value).toBe('Changed elsewhere'));
-        await click('musicNotes.remove'); await click('musicNotes.cancel');
-        expect(await repository.get(host.playing)).toBeDefined();
-        await click('musicNotes.remove'); await click('musicNotes.confirmRemove');
-        await vi.waitFor(async () => expect(await repository.get(host.playing)).toBeUndefined());
-        expect(warn).toHaveBeenCalledOnce();
+    it('keeps a note until its deletion is confirmed', async () => {
+        await db.save(song, { ...emptyNoteDraft(), note: 'Original' }, null);
+        // A clock correction must not hide the confirmation of a successful local write.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 3_600_000);
+        await ready(); const body = surface.querySelector('textarea')!;
+        await typeInto(body, '');
+        await act(async () => notebook.flush(song));
+        expect((await db.get(song))?.note).toBe('');
+        expect(surface.querySelector('header')?.textContent).toContain('已保存到本地 · 刚刚');
+        await click('删除这条笔记');
+        expect(surface.querySelector('[role="dialog"]')).toBeNull();
+        await press(button('确认删除？'), 'Escape');
+        expect(await db.get(song)).toBeDefined();
+        await click('删除这条笔记');
+        const before = (await db.get(song))!;
+        await act(async () => { await db.save(song, { ...before, note: 'Changed elsewhere' }, before.revision); });
+        await vi.waitFor(() => expect(body.value).toBe('Changed elsewhere'));
+        await click('确认删除？');
+        expect(notify).toHaveBeenCalledWith('笔记已更改，请重新确认删除。');
+        expect((await db.get(song))?.note).toBe('Changed elsewhere');
+        await click('删除这条笔记'); await click('确认删除？');
+        await vi.waitFor(async () => expect(await db.get(song)).toBeUndefined());
     });
 
-    it('moves settings tabs with arrow keys inside the mod shadow root', async () => {
-        await ready(); const collection = button('musicNotes.collection');
-        collection.focus(); expect(document.activeElement).toBe(container);
-        await act(async () => { collection.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
-        expect(button('musicNotes.importTab').getAttribute('aria-selected')).toBe('true');
-        expect(surface.activeElement).toBe(button('musicNotes.importTab'));
+    it('navigates notes with the keyboard and searches inside a moment', async () => {
+        await db.save(second, { ...emptyNoteDraft(), bookmarks: [{ id: 'b', positionSeconds: 22, text: 'bridge' }] }, null);
+        await db.importSongs([song]);
+        await ready();
+        const allNotes = [...surface.querySelectorAll('aside section')].find(section => section.querySelector('h3')?.textContent === '全部笔记')!;
+        const [firstRow, secondRow] = allNotes.querySelectorAll<HTMLButtonElement>('button[data-song-key]');
+        await act(async () => firstRow.focus()); await press(firstRow, 'ArrowDown');
+        expect(surface.activeElement).toBe(secondRow);
+        expect(surface.querySelector('[data-music-notes="editor"]')?.textContent).toContain('Second song');
+        const search = surface.querySelector<HTMLInputElement>('input[placeholder="搜索歌名、歌手、标签或笔记"]')!;
+        await typeInto(search, 'missing');
+        await vi.waitFor(() => expect(surface.textContent).toContain('没有找到'));
+        await typeInto(search, 'bridge');
+        await vi.waitFor(() => expect(surface.querySelector('aside')?.textContent).toContain('Second song'));
     });
 });

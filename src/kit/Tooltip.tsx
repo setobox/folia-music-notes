@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useSettingsKitTheme } from './kitTheme';
 import { KIT_MOTION, kitTransition, useKitReducedMotion } from './motion';
@@ -47,6 +46,7 @@ export const Tooltip: React.FC<TooltipProps> = ({ text, className, children }) =
     useLayoutEffect(() => {
         const anchor = anchorRef.current;
         const label = labelRef.current;
+        if (shown && label?.isConnected && !label.matches(':popover-open')) label.showPopover();
         setPlace(shown && anchor && label
             ? placePopover(
                 anchor.getBoundingClientRect(),
@@ -92,12 +92,12 @@ export const Tooltip: React.FC<TooltipProps> = ({ text, className, children }) =
             onBlur={hide}
         >
             {children}
-            {createPortal(
-                <AnimatePresence>
+            <AnimatePresence>
                     {shown && (
                         <motion.span
                             ref={labelRef}
                             role="tooltip"
+                            popover="manual"
                             initial={{ opacity: 0 }}
                             // It comes the last few pixels from the part's side.
                             animate={place ? { opacity: 1, y: [place.side === 'over' ? 4 : -4, 0] } : { opacity: 0 }}
@@ -105,8 +105,13 @@ export const Tooltip: React.FC<TooltipProps> = ({ text, className, children }) =
                             transition={kitTransition('fast', reduced)}
                             className="pointer-events-none fixed z-[210] rounded-md px-2 py-1 text-xs leading-[18px] shadow-[0_6px_18px_rgba(0,0,0,0.3)] [overflow-wrap:anywhere]"
                             style={{
+                                margin: 0,
+                                border: 0,
+                                right: 'auto',
                                 left: place?.left ?? 0,
-                                ...(place?.bottom === undefined ? { top: place?.top ?? 0 } : { bottom: place.bottom }),
+                                top: place?.top ?? 'auto',
+                                bottom: place?.bottom ?? 'auto',
+                                visibility: place ? 'visible' : 'hidden',
                                 maxWidth: Math.min(MAX_WIDTH, window.innerWidth - 2 * POPOVER_GUTTER),
                                 width: 'max-content',
                                 color: isDaylight ? '#ffffff' : '#17171a',
@@ -116,9 +121,7 @@ export const Tooltip: React.FC<TooltipProps> = ({ text, className, children }) =
                             {text}
                         </motion.span>
                     )}
-                </AnimatePresence>,
-                document.body,
-            )}
+            </AnimatePresence>
         </span>
     );
 };

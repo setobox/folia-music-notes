@@ -1,28 +1,38 @@
-/* Layout only: controls and colors come from the settings kit bundled with this mod. */
-.music-notes-page {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100%;
-    min-height: 0;
+/* Page geometry only. The controls inherit Folia's kit colors, type, focus and spacing. */
+.music-notes-layout {
+    display: grid;
+    grid-template-columns: minmax(0, min(20rem, 35%)) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     overflow: hidden;
-    background: var(--st-win);
-    color: var(--st-t1);
-    font-family: inherit;
 }
-
-.music-notes-page [hidden] { display: none !important; }
-.music-notes-content { min-height: 0; flex: 1; overflow-y: auto; padding: 0 16px 32px; }
-.music-notes-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; align-items: start; }
-.music-notes-columns > * { min-width: 0; }
-.music-notes-field-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.music-notes-field-line > :first-child { flex: 1 1 180px; min-width: 0; }
-.music-notes-notice { margin-top: 20px; }
-
-@media (min-width: 768px) {
-    .music-notes-content { padding-right: 32px; padding-left: 32px; }
+.music-notes-list {
+    min-height: 0;
+    min-width: 0;
+    overflow: clip;
+    border-inline-end: 1px solid var(--st-line);
 }
-
-@media (min-width: 1050px) {
-    .music-notes-columns { grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr); }
+.music-notes-editor { max-width: 45rem; }
+.music-notes-back { display: none; }
+.music-notes-layout[data-first] { display: flex; }
+.music-notes-layout[data-first] .music-notes-detail {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+}
+.music-notes-layout[data-first] .music-notes-detail > :last-child { margin-block: auto; }
+.music-notes-layout[data-first] [data-music-notes="tags"] { order: 1; }
+.music-notes-layout[data-first] .music-notes-editor > :last-child { order: 2; }
+.music-notes-hover { opacity: 0; }
+.group:hover .music-notes-hover, .group:focus-within .music-notes-hover { opacity: 1; }
+@media (hover: none) {
+    .music-notes-hover { opacity: 1; }
+}
+@media (max-width: 899px) {
+    .music-notes-layout { display: flex; flex-direction: column; }
+    .music-notes-list, .music-notes-detail { flex: 1; }
+    .music-notes-list { border: 0; }
+    .music-notes-back { display: block; }
+    .music-notes-layout[data-detail] > .music-notes-list,
+    .music-notes-layout:not([data-first]):not([data-detail]) > .music-notes-detail { display: none; }
 }
