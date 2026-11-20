@@ -31,6 +31,8 @@ const theme: FoliumTheme = { name: 'Test', backgroundColor: '#111111', primaryCo
 const port: MusicNotesPort = {
     currentSong: () => host.playing,
     currentTime: () => 12,
+    playbackState: () => 'playing', isPlaying: () => true, cover: async () => null,
+    pause: vi.fn(), playAt: vi.fn(async () => false),
     subscribe: () => () => undefined,
     play: host.play,
     seek: vi.fn(),

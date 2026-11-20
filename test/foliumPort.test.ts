@@ -28,8 +28,10 @@ const makeHost = () => {
         host: { folium: { major: 1, minor: 10 }, folia: '0.7.29' },
         env: { context: 'main' },
         playback: {
-            getState: vi.fn((): { song: FoliumSong | null; position: number } => ({ song: null, position: 12 })),
+            getState: vi.fn((): { song: FoliumSong | null; position: number; state?: string; duration?: number } => ({ song: null, position: 12 })),
             playSong: vi.fn().mockResolvedValue(true),
+            play: vi.fn(),
+            pause: vi.fn(),
             seek: vi.fn(),
         },
         omni: { listProviders: vi.fn(() => [provider()]), resolveSongs: vi.fn() },
@@ -84,17 +86,46 @@ describe('music notes Folium port playback', () => {
         fixture.host.playback.getState.mockReturnValue({ song: null, position: 0 });
         fixture.host.omni.resolveSongs.mockResolvedValue([{ status: 'found', song: dto }]);
         // A fresh activation has no in-memory alias cache; previously saved sourceRef identities still work.
-        await expect(createFoliumPort(fixture.sdk).play(noteSong(mid, 'online:qq'))).resolves.toBe(true);
+        fixture.host.playback.playSong.mockImplementationOnce(async () => {
+            fixture.host.playback.getState.mockReturnValue({ song: dto, position: 0, state: 'playing', duration: 200 });
+            return true;
+        });
+        await expect(createFoliumPort(fixture.sdk).playAt(noteSong(mid, 'online:qq'), 20)).resolves.toBe(true);
         expect(fixture.host.omni.resolveSongs).toHaveBeenCalledExactlyOnceWith([{ source: 'qq', id: mid }]);
         expect(fixture.host.playback.playSong).toHaveBeenCalledExactlyOnceWith(dto);
+        expect(fixture.host.playback.seek).toHaveBeenLastCalledWith(20);
+        // A different song winning the playback request must never receive the seek.
+        fixture.host.playback.getState.mockReturnValue({ song: null, position: 0 });
+        fixture.host.playback.playSong.mockImplementationOnce(async () => {
+            fixture.host.playback.getState.mockReturnValue({ song: dtoSong('other', 'qq'), position: 0, state: 'playing', duration: 200 });
+            fixture.host.internals.stores.playback.getState.mockReturnValue({ currentSong: rawSong('other', 'qq') });
+            return true;
+        });
+        await expect(port.playAt(imported, 80)).resolves.toBe(false);
+        expect(fixture.host.playback.seek).toHaveBeenCalledTimes(2);
+        const earlier = port.playAt(imported, 45);
+        const later = port.play(imported);
+        await expect(earlier).resolves.toBe('superseded');
+        await expect(later).resolves.toBe(true);
     });
 
-    it('plays a local note only when its original file is the current song', async () => {
+    it('plays a known local file by its host reference and refuses an unresolved file', async () => {
         const dto = dtoSong('-123', 'local');
-        fixture.host.playback.getState.mockReturnValue({ song: dto, position: 12 });
+        fixture.host.playback.getState.mockReturnValue({ song: dto, position: 12, state: 'paused' });
         fixture.host.internals.stores.playback.getState.mockReturnValue({ currentSong: { id: -123, sourceRef: { kind: 'local', mediaId: 'file-uuid' } } });
         const port = createFoliumPort(fixture.sdk);
         expect(port.currentSong()).toMatchObject({ source: 'local', id: 'file-uuid' });
+        expect(port.playbackState()).toBe('paused');
+        await expect(port.play(noteSong('file-uuid', 'local'))).resolves.toBe(true);
+        expect(fixture.host.playback.play).toHaveBeenCalledOnce();
+        expect(fixture.host.playback.playSong).not.toHaveBeenCalled();
+        fixture.host.playback.getState.mockReturnValue({ song: dto, position: 12, state: 'playing' });
+        port.pause(noteSong('different-file', 'local'));
+        expect(fixture.host.playback.pause).not.toHaveBeenCalled();
+        port.pause(noteSong('file-uuid', 'local'));
+        expect(fixture.host.playback.pause).toHaveBeenCalledOnce();
+        expect(fixture.host.playback.seek).not.toHaveBeenCalled();
+        fixture.host.playback.getState.mockReturnValue({ song: null, position: 0, state: 'stopped' });
         await expect(port.play(noteSong('file-uuid', 'local'))).resolves.toBe(true);
         await expect(port.play(noteSong('different-file', 'local'))).resolves.toBe(false);
         expect(fixture.host.playback.playSong).toHaveBeenCalledExactlyOnceWith(dto);

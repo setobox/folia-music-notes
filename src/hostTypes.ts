@@ -1,3 +1,4 @@
+import type { FoliumPlaybackState } from '../types/folium';
 import type { NoteSong } from './core';
 
 // The notebook only sees these host capabilities; Folium and platform objects stay in the adapter.
@@ -15,11 +16,18 @@ export interface NoteImportPlaylist {
     trackCount?: number;
 }
 
+export type PlaybackAttempt = boolean | 'superseded';
+
 export interface MusicNotesPort {
     currentSong(): NoteSong | null;
     currentTime(): number;
+    playbackState(): FoliumPlaybackState;
+    isPlaying(): boolean;
+    cover(song: NoteSong): Promise<string | null>;
     subscribe(listener: () => void): () => void;
-    play(song: NoteSong): Promise<boolean>;
+    play(song: NoteSong): Promise<PlaybackAttempt>;
+    pause(song: NoteSong): void;
+    playAt(song: NoteSong, seconds: number): Promise<PlaybackAttempt>;
     seek(song: NoteSong, seconds: number): void;
     accounts(): NoteImportAccount[];
     playlists(source: string, signal?: AbortSignal): Promise<NoteImportPlaylist[]>;
