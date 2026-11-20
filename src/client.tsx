@@ -9,6 +9,7 @@ import { musicNotesResources } from './locales';
 import { Notebook } from './notebook';
 import { registerMusicNotesPonder } from './ponder';
 import { registerProgressNotes } from './progressNotes';
+import { registerShortcut } from './shortcutSettings';
 import MusicNotesWindow from './ui/MusicNotesWindow';
 import styles from './styles.css?inline';
 
@@ -88,12 +89,8 @@ export default function activate(folium: FoliumClientApi): (() => void) | undefi
         },
     };
     let tab = folium.registries.homeTabs.register(notebookTab);
-    const open = folium.registries.commands.register({
-        id: 'open', globalShortcut: true,
-        label: { 'zh-CN': '打开音乐笔记', 'zh-TW': '開啟音樂筆記', en: 'Open music notes', in: 'Buka catatan lagu', vi: 'Mở ghi chú bài hát' },
-        keywords: ['notes', 'tags', '笔记', '备注', '标签'],
-        run: () => { folium.ui.openHomeTab('notebook'); },
-    });
+    const openNotebook = () => { folium.ui.openHomeTab('notebook'); };
+    const stopShortcut = registerShortcut(folium, i18n, openNotebook);
     let markCommand: FoliumRegistryHandle | undefined;
     let retryPlayback: number | undefined;
     const updateMark = () => {
@@ -147,7 +144,7 @@ export default function activate(folium: FoliumClientApi): (() => void) | undefi
         offReady();
         window.clearTimeout(retryPlayback);
         markCommand?.unregister();
-        open.unregister();
+        stopShortcut();
         tab.unregister();
         stopProgress();
         stopPonder();

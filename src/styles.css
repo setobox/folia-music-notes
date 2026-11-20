@@ -4,6 +4,7 @@
 @source "./kit";
 @source "./ui";
 @source "./progressNotes.tsx";
+@source "./shortcutSettings.tsx";
 
 /* Everything is installed inside the home-tab shadow root supplied by Folium. */
 :host { font-family: var(--folium-font, sans-serif); }

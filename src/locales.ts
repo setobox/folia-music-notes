@@ -1,6 +1,14 @@
 // Notebook translations stay with the mod and use Folia's language selection.
 export const musicNotesZhCN = {
     title: '音乐笔记',
+    shortcutLabel: '打开音乐笔记',
+    shortcutEnabled: '启用快捷键',
+    shortcutClear: '清空快捷键',
+    shortcutCapture: '按下组合键',
+    shortcutNone: '未绑定',
+    shortcutConflict: '{{binding}} 按键冲突',
+    shortcutUnsupported: '不支持此组合键',
+    shortcutReset: '恢复',
     stats: '{{songs}} 首 · {{moments}} 个时刻',
     viewAll: '查看全部',
     close: '关闭',
@@ -76,6 +84,14 @@ type NotesTranslation = { [Key in keyof typeof musicNotesZhCN]: string };
 
 const en: NotesTranslation = {
     title: 'Music notes',
+    shortcutLabel: 'Open music notes',
+    shortcutEnabled: 'Enable shortcuts',
+    shortcutClear: 'Clear shortcut',
+    shortcutCapture: 'Press a key combination',
+    shortcutNone: 'Unassigned',
+    shortcutConflict: '{{binding}} is already in use',
+    shortcutUnsupported: 'Unsupported key combination',
+    shortcutReset: 'Reset',
     stats: '{{songs}} songs · {{moments}} moments',
     viewAll: 'View all',
     close: 'Close',
@@ -149,6 +165,14 @@ const en: NotesTranslation = {
 
 const indonesian: NotesTranslation = {
     title: 'Catatan musik',
+    shortcutLabel: 'Buka catatan musik',
+    shortcutEnabled: 'Aktifkan pintasan',
+    shortcutClear: 'Hapus pintasan',
+    shortcutCapture: 'Tekan kombinasi tombol',
+    shortcutNone: 'Belum diatur',
+    shortcutConflict: '{{binding}} sudah digunakan',
+    shortcutUnsupported: 'Kombinasi tombol tidak didukung',
+    shortcutReset: 'Pulihkan',
     stats: '{{songs}} lagu · {{moments}} momen',
     viewAll: 'Lihat semua',
     close: 'Tutup',
