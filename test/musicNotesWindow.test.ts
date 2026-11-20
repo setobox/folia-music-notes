@@ -205,7 +205,7 @@ describe('music notes mod user flows', () => {
         expect(surface.querySelector('aside')?.textContent).not.toContain('已暂停');
     });
 
-    it('keeps a note until its deletion is confirmed', async () => {
+    it('keeps notes until single or bulk deletion is confirmed and preserves unchecked songs', async () => {
         await db.save(song, { ...emptyNoteDraft(), note: 'Original' }, null);
         // A clock correction must not hide the confirmation of a successful local write.
         vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 3_600_000);
@@ -227,6 +227,29 @@ describe('music notes mod user flows', () => {
         expect((await db.get(song))?.note).toBe('Changed elsewhere');
         await click('删除这条笔记'); await click('确认删除？');
         await vi.waitFor(async () => expect(await db.get(song)).toBeUndefined());
+        const untouched = { ...song, id: 'three', title: 'Keep this song' };
+        const album = 'Selection group';
+        const others = Array.from({ length: 50 }, (_, i) => ({ ...song, id: `z-${i}`, title: `Track ${i}`, album }));
+        await act(async () => { await notebook.importSongs([{ ...song, album }, second, untouched, ...others]); });
+        await click('批量删除');
+        const checks = [...surface.querySelectorAll<HTMLButtonElement>('aside button[role="checkbox"]')];
+        expect(checks).toHaveLength(50);
+        await act(async () => checks.find(row => row.textContent?.includes(second.title))!.click());
+        await typeInto(surface.querySelector<HTMLInputElement>('aside input')!, album);
+        expect(button('全选').disabled).toBe(true);
+        await vi.waitFor(() => expect(button('全选').disabled).toBe(false));
+        await click('全选');
+        await click('取消全选');
+        expect(button('删除（1）').disabled).toBe(false);
+        await click('全选'); await click('删除（52）');
+        const confirm = () => surface.querySelector<HTMLElement>('[role="dialog"]:not([inert])')!;
+        expect(confirm().querySelector('p')?.textContent).toBe('确认删除选中的 52 首？');
+        expect(confirm().querySelector('p strong')?.textContent).toBe('52');
+        expect(confirm().textContent).not.toContain(second.title);
+        await click('取消', confirm());
+        expect(await db.list()).toHaveLength(53);
+        await click('删除（52）'); await click('删除', confirm());
+        await vi.waitFor(async () => expect((await db.list()).map(note => note.song)).toEqual([untouched]));
     });
 
     it('navigates notes with the keyboard and searches inside a moment', async () => {

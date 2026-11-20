@@ -1,10 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
+import { Square, SquareCheck, Trash2 } from 'lucide-react';
 import { Button, TextField } from '../kit';
 import { Popover } from '../kit/Popover';
-import { filterNotes, songKey, type MusicNote, type NoteSong } from '../core';
+import { SheetButton } from '../kit/Sheet';
+import { filterNotes, NotesConflictError, songKey, type MusicNote, type NoteSong } from '../core';
 import { tagKey } from '../core/notesModel';
 import type { MusicNotesPort } from '../hostTypes';
+import type { Notebook } from '../notebook';
+import { NotebookSheet } from './NotebookActions';
 import { NoteCover } from './NoteCover';
 import { CHIP } from './NoteTags';
 
@@ -118,7 +122,7 @@ function summary(note: MusicNote): string {
     return firstLine || lastMoment || note.tags.join(' · ');
 }
 
-export function NoteList({ notes, tags, port, current, paused, selection, select }: {
+export function NoteList({ notes, tags, port, current, paused, selection, select, notebook, notify }: {
     notes: readonly MusicNote[];
     tags: readonly string[];
     port: MusicNotesPort;
@@ -126,27 +130,74 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
     paused: boolean;
     selection: string | null;
     select: (song: NoteSong, focusBody: boolean, openDetail: boolean) => void;
+    notebook: Notebook;
+    notify: (message: string) => void;
 }) {
     const { t } = useTranslation();
     const [query, setQuery] = useState('');
     const [debounced, setDebounced] = useState('');
     const [filter, setFilter] = useState('');
     const [limit, setLimit] = useState(50);
+    const [checked, setChecked] = useState<Set<string> | null>(null);
+    const [confirming, setConfirming] = useState<MusicNote[] | null>(null);
+    const [deleting, setDeleting] = useState(false);
+    const trigger = useRef<HTMLButtonElement>(null);
+    const scroll = useRef<HTMLDivElement>(null);
+    const chosen = useMemo(() => checked ? notes.filter(note => checked.has(note.key)) : [], [checked, notes]);
+    const exitSelection = () => {
+        setChecked(null);
+        requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
+    };
+    const deleteSelected = async () => {
+        if (!confirming || deleting) return;
+        setDeleting(true);
+        try {
+            await notebook.removeMany(confirming);
+            exitSelection();
+        } catch (error) {
+            console.warn('[MusicNotes] batch delete failed', error);
+            notify(t(error instanceof NotesConflictError ? 'musicNotes.deleteConflict' : 'musicNotes.failed'));
+        } finally {
+            setConfirming(null);
+            setDeleting(false);
+        }
+    };
     const tag = tags.find(name => tagKey(name) === filter);
     useEffect(() => {
         const timer = setTimeout(() => { setDebounced(query); setLimit(50); }, 180);
         return () => clearTimeout(timer);
     }, [query]);
     const visible = useMemo(() => !debounced.trim() && !tag ? notes : filterNotes(notes, debounced, tag), [notes, debounced, tag]);
+    const allSelected = checked !== null && visible.length > 0 && visible.every(note => checked.has(note.key));
+    const toggleAll = () => {
+        if (!checked) return;
+        const next = new Set(checked);
+        for (const note of visible) {
+            if (allSelected) next.delete(note.key);
+            else next.add(note.key);
+        }
+        setChecked(next);
+    };
     const currentKey = current && songKey(current);
     const currentNote = currentKey ? notes.find(note => note.key === currentKey) : undefined;
     const rows = visible.slice(0, limit);
     const choose = (key: string) => { setFilter(key); setLimit(50); };
     const row = (song: NoteSong, note?: MusicNote) => {
         const key = songKey(song);
-        return <button type="button" key={key} data-song-key={key} aria-pressed={key === selection}
-            className="group st-focus-inside flex w-full min-w-0 items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-[var(--st-fill)] aria-pressed:bg-[var(--st-fill2)]"
-            onClick={() => select(song, !note, true)}>
+        const CheckedIcon = checked?.has(key) ? SquareCheck : Square;
+        return <button type="button" key={key} data-song-key={key} role={checked ? 'checkbox' : undefined}
+            aria-checked={checked?.has(key)} aria-pressed={checked ? undefined : key === selection}
+            className="group st-focus-inside flex w-full min-w-0 items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-[var(--st-fill)] aria-pressed:bg-[var(--st-fill2)] aria-checked:bg-[var(--st-fill2)]"
+            onClick={() => {
+                if (!checked) { select(song, !note, true); return; }
+                setChecked(previous => {
+                    if (!previous) return previous;
+                    const next = new Set(previous);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    return next;
+                });
+            }}>
+            {checked && <CheckedIcon aria-hidden size={16} className="shrink-0 text-[color:var(--st-t2)]" />}
             <NoteCover song={song} port={port} />
             <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm text-[color:var(--st-t1)]">{[song.title, song.artist].filter(Boolean).join(' · ')}</span>
@@ -163,7 +214,7 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
                 <TextField value={query} onChange={setQuery} placeholder={t('musicNotes.searchHint')} /></label>
             <TagFilter tags={tags} active={tag ? filter : ''} onChange={choose} />
         </div>
-        <div className="st-scroll min-h-0 space-y-4 overflow-y-auto overscroll-contain" onKeyDown={event => {
+        <div ref={scroll} className="st-scroll min-h-0 space-y-4 overflow-y-auto overscroll-contain" onKeyDown={event => {
             if (event.altKey || event.ctrlKey || event.metaKey || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
             const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-song-key]:not([inert] *)')];
             const index = buttons.indexOf(event.target as HTMLButtonElement);
@@ -172,14 +223,32 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
             const target = buttons[Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))];
             const key = target.dataset.songKey;
             const selected = key === currentKey ? current : rows.find(note => note.key === key)?.song;
-            if (selected) select(selected, false, false);
+            if (!checked && selected) select(selected, false, false);
             target.focus();
         }}>
-            {current && <section><h3 className="mb-2 px-2 text-xs font-medium text-[color:var(--st-t2)]">
+            {!checked && current && <section><h3 className="mb-2 px-2 text-xs font-medium text-[color:var(--st-t2)]">
                 {t(paused ? 'musicNotes.paused' : 'musicNotes.nowPlaying')}
             </h3>{row(current, currentNote)}</section>}
             <section>
-                <h3 className="mb-2 px-2 text-xs font-medium text-[color:var(--st-t2)]">{t('musicNotes.allNotes')}</h3>
+                <div className={`mb-2 flex flex-wrap items-center justify-between gap-1 px-2 ${checked ? 'sticky top-0 z-10 bg-[var(--st-win)]' : ''}`}>
+                    <h3 className="text-xs font-medium text-[color:var(--st-t2)]">{t('musicNotes.allNotes')}</h3>
+                    {checked ? <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
+                        <Button variant="quiet" disabled={!visible.length || query.trim() !== debounced.trim()} onClick={toggleAll}>
+                            {t(allSelected ? 'musicNotes.deselectAll' : 'musicNotes.selectAll')}
+                        </Button>
+                        <Button variant="quiet" data-cancel-note-selection="" onClick={exitSelection}>{t('musicNotes.cancel')}</Button>
+                        <Button variant="quiet" icon={Trash2} disabled={!chosen.length} onClick={() => setConfirming(chosen)}>
+                            {t('musicNotes.deleteSelected', { count: chosen.length })}
+                        </Button>
+                    </div> : <Button buttonRef={trigger} variant="quiet" onClick={() => {
+                        setChecked(new Set());
+                        requestAnimationFrame(() => {
+                            const target = scroll.current?.querySelector<HTMLButtonElement>('[role="checkbox"]') ??
+                                scroll.current?.querySelector<HTMLButtonElement>('[data-cancel-note-selection]');
+                            target?.focus({ preventScroll: true });
+                        });
+                    }}>{t('musicNotes.bulkDelete')}</Button>}
+                </div>
                 <div className="relative min-w-0">
                     {rows.map(note => row(note.song, note))}
                 </div>
@@ -189,5 +258,13 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
                 </div>}
             </section>
         </div>
+        <NotebookSheet open={confirming !== null} title={t('musicNotes.bulkDelete')} busy={deleting} onClose={() => setConfirming(null)}
+            footer={<>
+                <SheetButton data-autofocus disabled={deleting} onClick={() => setConfirming(null)}>{t('musicNotes.cancel')}</SheetButton>
+                <SheetButton variant="danger" disabled={deleting} onClick={() => { void deleteSelected(); }}>{t('musicNotes.confirmRemove')}</SheetButton>
+            </>}>
+            <p className="text-sm"><Trans i18nKey="musicNotes.confirmBulkDelete" count={confirming?.length ?? 0}
+                components={{ strong: <strong className="font-bold" /> }} /></p>
+        </NotebookSheet>
     </aside>;
 }

@@ -53,6 +53,9 @@ export default function activate(folium: FoliumClientApi): (() => void) | undefi
                 if (page.querySelector('[data-folia-sheet="true"]')) return;
                 event.preventDefault();
                 event.stopPropagation();
+                // Selection also owns Escape when focus has moved to the editor or the host tab.
+                const cancelSelection = page.querySelector<HTMLButtonElement>('[data-cancel-note-selection]');
+                if (cancelSelection) { cancelSelection.click(); return; }
                 // Removing the active Folium tab returns to the native library. Re-register its launcher.
                 tab.unregister();
                 tab = folium.registries.homeTabs.register(notebookTab);
