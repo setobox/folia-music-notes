@@ -37,13 +37,24 @@ export interface NotesImportResult {
     skipped: number;
 }
 
+export interface NotesLibrary {
+    notes: MusicNote[];
+    tagOrder: string[];
+}
+
 export interface MusicNotesRepository {
     list(): Promise<MusicNote[]>;
+    library(): Promise<NotesLibrary>;
+    move(kind: 'note' | 'tag', key: string, target: string, side: 'before' | 'after'): Promise<void>;
+    /** Fires on initial observation and whenever a committed edit changes this library. */
+    watch(onChange: () => void, onError: (error: unknown) => void): () => void;
     get(identity: SongIdentity): Promise<MusicNote | undefined>;
     importSongs(songs: readonly NoteSong[]): Promise<NotesImportResult>;
     /** null means the editor opened a song which was not saved yet. */
     save(song: NoteSong, draft: NoteDraft, expectedRevision: number | null): Promise<MusicNote>;
     remove(identity: SongIdentity, expectedRevision: number): Promise<void>;
+    /** Check all revisions before deleting any selected note. A null revision is a local, unsaved draft. */
+    removeMany(entries: readonly { song: SongIdentity; revision: number | null }[]): Promise<void>;
     exportBackup(): Promise<string>;
     /** Add missing records only: local records always win, even if the backup is newer. */
     importBackup(json: string): Promise<NotesImportResult>;

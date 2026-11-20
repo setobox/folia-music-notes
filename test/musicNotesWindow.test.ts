@@ -112,7 +112,7 @@ describe('music notes mod user flows', () => {
         await act(async () => { read.resolve([imported, host.playing]); });
         await vi.waitFor(async () => expect(await repository.get(imported)).toBeDefined());
         await click('musicNotes.collection');
-        expect(surface.textContent).toContain('Imported song');
+        await vi.waitFor(() => expect(surface.textContent).toContain('Imported song'));
         expect((await repository.get(host.playing))?.note).toBe('Original memory');
         expect((await repository.get(host.playing))?.tags).toEqual([]);
         expect(tagInput()?.value).toBe('pending tag');
