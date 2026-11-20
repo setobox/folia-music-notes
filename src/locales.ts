@@ -1,5 +1,6 @@
 // Notebook translations belong to the mod, so installing it does not alter the host's language files.
 export const musicNotesZhCN = {
+    importing: '正在导入…', retry: '重试',
     title: '音乐笔记', sections: '笔记页面', collection: '收藏', importTab: '导入', backup: '备份', close: '关闭',
     privateHint: '笔记只保存在这台设备，不会上传到音乐平台。',
     current: '添加当前歌曲', noCurrent: '播放一首歌曲后，可以在这里添加。',
@@ -34,6 +35,7 @@ export const musicNotesZhCN = {
 type NotesTranslation = { [Key in keyof typeof musicNotesZhCN]: string };
 
 const en: NotesTranslation = {
+    importing: 'Importing…', retry: 'Retry',
     title: 'Music notes', sections: 'Notebook pages', collection: 'Collection', importTab: 'Import', backup: 'Backup', close: 'Close',
     privateHint: 'Notes stay on this device and are not uploaded to music services.',
     current: 'Add current song', noCurrent: 'Play a song to add it here.', search: 'Search', searchHint: 'Song, artist, tag or note', filterTag: 'Filter by tag',
@@ -57,6 +59,7 @@ const en: NotesTranslation = {
 };
 
 const indonesian: NotesTranslation = {
+    importing: 'Sedang mengimpor…', retry: 'Coba lagi',
     title: 'Catatan musik', sections: 'Halaman catatan', collection: 'Koleksi', importTab: 'Impor', backup: 'Cadangan', close: 'Tutup',
     privateHint: 'Catatan disimpan di perangkat ini dan tidak diunggah ke layanan musik.',
     current: 'Tambah lagu saat ini', noCurrent: 'Putar lagu untuk menambahkannya di sini.', search: 'Cari', searchHint: 'Lagu, artis, tag, atau catatan', filterTag: 'Filter berdasarkan tag',

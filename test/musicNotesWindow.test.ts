@@ -105,7 +105,11 @@ describe('music notes mod user flows', () => {
         host.readPlaylist.mockReturnValue(read.promise);
         await ready(); await enterTag('pending tag');
         await click('musicNotes.importTab'); await click('Test account'); await click('Saved playlist');
+        await click('Saved playlist');
+        expect(button('musicNotes.import').disabled).toBe(true);
+        await click('Saved playlist');
         await click('musicNotes.import');
+        expect(surface.querySelector('[data-music-notes=import] [role=status]')?.textContent).toContain('musicNotes.importing');
         expect(host.readPlaylist).toHaveBeenCalledOnce();
         expect(button('musicNotes.play').disabled).toBe(true);
         expect(button('musicNotes.save').disabled).toBe(true);
