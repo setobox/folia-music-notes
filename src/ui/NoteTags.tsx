@@ -4,15 +4,17 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../kit';
 import { FIELD_CLASS } from '../kit/TextField';
 import { NOTES_LIMITS, normalizeTags, splitTagInput, tagKey } from '../core/notesModel';
+import { SortableGroup, type MoveItem } from './SortableGroup';
 
 // Neutral form of the settings chip, shared by the editor and single-select library filter.
 export const CHIP = 'st-t-fast inline-flex h-8 min-w-0 shrink-0 items-center justify-center rounded-lg text-sm transition-colors hover:bg-[var(--st-fill2)]';
 
-export function NoteTags({ tags, options, change, notify }: {
+export function NoteTags({ tags, options, change, notify, moveTag }: {
     tags: readonly string[];
     options: readonly string[];
     change: (update: (previous: string[]) => string[]) => void;
     notify: (message: string) => void;
+    moveTag: MoveItem;
 }) {
     const { t } = useTranslation();
     const [editing, setEditing] = useState(false);
@@ -21,6 +23,17 @@ export function NoteTags({ tags, options, change, notify }: {
     const listId = useId();
     const control = useRef<HTMLSpanElement>(null);
     const selected = useMemo(() => new Map(tags.map(name => [tagKey(name), name])), [tags]);
+    const ordered = useMemo(() => {
+        const remaining = new Map(selected);
+        const names: string[] = [];
+        for (const option of options) {
+            if (!remaining.size) break;
+            const key = tagKey(option);
+            const label = remaining.get(key);
+            if (label !== undefined) { names.push(label); remaining.delete(key); }
+        }
+        return names.concat([...remaining.values()]);
+    }, [options, selected]);
     const term = tagKey(splitTagInput(input).at(-1) ?? '');
     const choices = useMemo(() => {
         const result: string[] = [];
@@ -50,7 +63,7 @@ export function NoteTags({ tags, options, change, notify }: {
         if (next.length > tags.length) change(previous => normalizeTags([...previous, ...tokens]));
         close(returnFocus);
     };
-    const add = <span ref={control} className="relative inline-flex min-w-0">
+    const add = <span ref={control} data-sort-fixed="" className="relative inline-flex min-w-0">
         {!editing ? <Button variant="quiet" icon={Plus} tip={t('musicNotes.addTagLabel')} onClick={() => setEditing(true)} /> : <>
             <input autoFocus role="combobox" aria-label={t('musicNotes.tags')} aria-expanded={choices.length > 0} aria-autocomplete="list"
                 aria-controls={choices.length ? listId : undefined} aria-activedescendant={highlight >= 0 && choices[highlight] ? `${listId}-${highlight}` : undefined}
@@ -74,18 +87,17 @@ export function NoteTags({ tags, options, change, notify }: {
         </>}
     </span>;
     return <div data-music-notes="tags">
-        <div role="group" aria-label={t('musicNotes.tags')}
+        <SortableGroup axis="horizontal" move={moveTag} label={t('musicNotes.tags')} after={add}
             className="relative flex flex-wrap items-center gap-1.5">
-            {tags.map(tag => <span key={tagKey(tag)} role="group" aria-label={tag}
+            {ordered.map(tag => <span key={tagKey(tag)} role="group" aria-label={tag} data-sort-key={tagKey(tag)} draggable
                 className={`${CHIP} st-focus-inside group relative max-w-full bg-[var(--st-fill)] px-4`}>
                 <span className="truncate">{tag}</span>
-                <button type="button" aria-label={t('musicNotes.removeTag', { tag })}
+                <button type="button" data-sort-fixed="" aria-label={t('musicNotes.removeTag', { tag })}
                     className="music-notes-hover absolute right-0 top-0 inline-flex size-4 items-center justify-center rounded-md text-[color:var(--st-t2)] hover:text-[color:var(--st-t1)]"
                     onClick={() => change(previous => previous.filter(value => tagKey(value) !== tagKey(tag)))}>
                     <X size={12} aria-hidden />
                 </button>
             </span>)}
-            {add}
-        </div>
+        </SortableGroup>
     </div>;
 }

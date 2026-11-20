@@ -11,10 +11,11 @@ import type { Notebook } from '../notebook';
 import { NotebookSheet } from './NotebookActions';
 import { NoteCover } from './NoteCover';
 import { CHIP } from './NoteTags';
+import { revealSortItem, SortableGroup, type MoveItem } from './SortableGroup';
 
 // Measure real chip widths so long names and translated labels also fit the sidebar's single line.
-function TagFilter({ tags, active, onChange }: {
-    tags: readonly string[]; active: string; onChange: (key: string) => void;
+function TagFilter({ tags, active, onChange, move }: {
+    tags: readonly string[]; active: string; onChange: (key: string) => void; move: MoveItem;
 }) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
@@ -69,7 +70,7 @@ function TagFilter({ tags, active, onChange }: {
     const base = `${CHIP} px-2 text-[color:var(--st-t2)] aria-pressed:bg-[var(--st-fill)] aria-pressed:text-[color:var(--st-t1)]`;
     const chip = (name: string, panel: boolean) => {
         const key = tagKey(name);
-        return <button type="button" key={key} ref={panel && key === active ? selected : undefined}
+        return <button type="button" key={key} ref={panel && key === active ? selected : undefined} data-sort-key={key} draggable
             aria-pressed={active === key} className={`${base} max-w-full`} onClick={() => { onChange(key); setOpen(false); }}>
             <span className="truncate">{name}</span>
         </button>;
@@ -80,20 +81,20 @@ function TagFilter({ tags, active, onChange }: {
                 {[all, viewAll, activeName ?? viewAll, ...tags.slice(0, measureLimit)].map((name, index) => <span key={index} className={base}>{name}</span>)}
             </div>
         </div>
-        <div role="group" aria-label={t('musicNotes.filterTag')} className="relative flex min-w-0 items-center gap-1.5">
-            <button type="button" className={base} aria-pressed={!active} onClick={() => onChange('')}>{all}</button>
-            {names.map(name => chip(name, false))}
-            {hasOverflow && <span className="inline-flex min-w-0">
+        <SortableGroup axis="horizontal" move={move} label={t('musicNotes.filterTag')} className="relative flex min-w-0 items-center gap-1.5"
+            before={<button type="button" className={base} aria-pressed={!active} onClick={() => onChange('')}>{all}</button>}
+            after={hasOverflow && <span className="inline-flex min-w-0">
                 <button type="button" ref={button} className={`${base} max-w-full`} aria-pressed={activeInOverflow}
                     aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined} onClick={() => setOpen(value => !value)}>
                     <span className="truncate">{activeInOverflow ? activeName : viewAll}</span>
                 </button>
-            </span>}
-        </div>
+            </span>}>
+            {names.map(name => chip(name, false))}
+        </SortableGroup>
         {open && hasOverflow && <Popover open id={menuId} role="dialog" aria-label={t('musicNotes.filterTag')} anchorRef={button} matchWidthRef={frame}
             focusRef={selected} onClose={() => setOpen(false)}>
             <div className="st-scroll relative min-h-0 max-h-52 overflow-y-auto overscroll-contain p-2"
-                onFocus={event => event.target.scrollIntoView?.({ block: 'nearest' })}
+                onFocus={event => revealSortItem(event.target)}
                 onKeyDown={event => {
                     if (event.altKey || event.ctrlKey || event.metaKey) return;
                     if (event.key === 'Tab') { setOpen(false); return; }
@@ -108,9 +109,9 @@ function TagFilter({ tags, active, onChange }: {
                     event.preventDefault(); event.stopPropagation();
                     items[next]?.focus({ preventScroll: true });
                 }}>
-                <div className="relative flex flex-wrap items-center gap-1.5">
+                <SortableGroup axis="horizontal" move={move} className="relative flex flex-wrap items-center gap-1.5">
                     {tags.map(name => chip(name, true))}
-                </div>
+                </SortableGroup>
             </div>
         </Popover>}
     </div>;
@@ -182,10 +183,17 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
     const currentNote = currentKey ? notes.find(note => note.key === currentKey) : undefined;
     const rows = visible.slice(0, limit);
     const choose = (key: string) => { setFilter(key); setLimit(50); };
-    const row = (song: NoteSong, note?: MusicNote) => {
+    const move = (kind: 'note' | 'tag', key: string, target: string, side: 'before' | 'after') => {
+        return notebook.move(kind, key, target, side).catch(error => {
+            console.warn('[MusicNotes] Could not reorder the notebook', error);
+            notify(t('musicNotes.failed'));
+        });
+    };
+    const row = (song: NoteSong, note?: MusicNote, sortable = false) => {
         const key = songKey(song);
         const CheckedIcon = checked?.has(key) ? SquareCheck : Square;
         return <button type="button" key={key} data-song-key={key} role={checked ? 'checkbox' : undefined}
+            data-sort-key={sortable ? key : undefined} draggable={sortable}
             aria-checked={checked?.has(key)} aria-pressed={checked ? undefined : key === selection}
             className="group st-focus-inside flex w-full min-w-0 items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-[var(--st-fill)] aria-pressed:bg-[var(--st-fill2)] aria-checked:bg-[var(--st-fill2)]"
             onClick={() => {
@@ -212,7 +220,7 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
         <div className="shrink-0 space-y-2">
             <label className="block [&_input]:w-full"><span className="sr-only">{t('musicNotes.searchHint')}</span>
                 <TextField value={query} onChange={setQuery} placeholder={t('musicNotes.searchHint')} /></label>
-            <TagFilter tags={tags} active={tag ? filter : ''} onChange={choose} />
+            <TagFilter tags={tags} active={tag ? filter : ''} onChange={choose} move={(...args) => move('tag', ...args)} />
         </div>
         <div ref={scroll} className="st-scroll min-h-0 space-y-4 overflow-y-auto overscroll-contain" onKeyDown={event => {
             if (event.altKey || event.ctrlKey || event.metaKey || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
@@ -249,9 +257,9 @@ export function NoteList({ notes, tags, port, current, paused, selection, select
                         });
                     }}>{t('musicNotes.bulkDelete')}</Button>}
                 </div>
-                <div className="relative min-w-0">
-                    {rows.map(note => row(note.song, note))}
-                </div>
+                <SortableGroup axis="vertical" move={(...args) => move('note', ...args)} className="relative min-w-0">
+                    {rows.map(note => row(note.song, note, !checked))}
+                </SortableGroup>
                 {visible.length > limit && <Button variant="quiet" onClick={() => setLimit(value => value + 50)}>{t('musicNotes.showMore')}</Button>}
                 {!visible.length && (debounced.trim() || tag) && <div className="flex items-center gap-2 px-2 py-2 text-sm text-[color:var(--st-t2)]">
                     {t('musicNotes.noMatches')} <Button variant="quiet" onClick={() => { setQuery(''); setDebounced(''); choose(''); }}>{t('musicNotes.clearSearch')}</Button>

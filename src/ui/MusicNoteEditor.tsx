@@ -66,8 +66,12 @@ export default function MusicNoteEditor({ notebook, port, song, playbackState, n
                 {revision !== undefined && !first && <DeleteNoteAction notebook={notebook} song={song} revision={revision} notify={notify} />}
             </div>
         </header>
-        <NoteTags tags={draft.tags} options={tags} notify={notify}
-            change={update => notebook.edit(song, old => ({ ...old, tags: update(old.tags) }), true)} />
+        <NoteTags tags={draft.tags} options={tags} notify={notify} moveTag={(...args) => {
+            return notebook.move('tag', ...args).catch(error => {
+                console.warn('[MusicNotes] Could not reorder tags', error);
+                notify(t('musicNotes.failed'));
+            });
+        }} change={update => notebook.edit(song, old => ({ ...old, tags: update(old.tags) }), true)} />
         <div data-music-notes="note">
             <textarea ref={bodyRef} rows={2} value={draft.note} aria-label={t('musicNotes.reason')} placeholder={t('musicNotes.reasonPlaceholder')}
                 maxLength={NOTES_LIMITS.note} className="block min-h-12 w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-base font-normal text-[color:var(--st-t1)] outline-none placeholder:text-[color:var(--st-t3)]"

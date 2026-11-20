@@ -25,6 +25,33 @@
 .music-notes-layout[data-first] .music-notes-editor > :last-child { order: 2; }
 .music-notes-hover { opacity: 0; }
 .group:hover .music-notes-hover, .group:focus-within .music-notes-hover { opacity: 1; }
+[data-sort-key] {
+    position: relative;
+    cursor: grab;
+    user-select: none;
+}
+[data-sort-key][data-dragging] { cursor: grabbing; opacity: 0.55; }
+[data-sort-key][data-insert]::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    border-color: var(--st-accent);
+    border-style: dashed;
+    border-width: 0;
+}
+[data-sort-axis="vertical"] [data-insert]::after {
+    inset-inline: 2px;
+    border-block-start-width: 2px;
+}
+[data-sort-axis="vertical"] [data-insert="before"]::after { top: 0; }
+[data-sort-axis="vertical"] [data-insert="after"]::after { bottom: 0; }
+[data-sort-axis="horizontal"] [data-insert]::after {
+    inset-block: 1px;
+    border-inline-start-width: 2px;
+}
+[data-sort-axis="horizontal"] [data-insert="before"]::after { inset-inline-start: 0; }
+[data-sort-axis="horizontal"] [data-insert="after"]::after { inset-inline-end: 0; }
 @media (hover: none) {
     .music-notes-hover { opacity: 1; }
 }

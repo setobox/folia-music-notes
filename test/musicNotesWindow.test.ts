@@ -252,15 +252,43 @@ describe('music notes mod user flows', () => {
         await vi.waitFor(async () => expect((await db.list()).map(note => note.song)).toEqual([untouched]));
     });
 
-    it('navigates notes with the keyboard and searches inside a moment', async () => {
+    it('navigates notes with the keyboard, reorders by dragging, and searches inside a moment', async () => {
+        const third = { ...song, id: 'three', title: 'Third song' };
+        await db.save(third, emptyNoteDraft(), null);
         await db.save(second, { ...emptyNoteDraft(), bookmarks: [{ id: 'b', positionSeconds: 22, text: 'bridge' }] }, null);
         await db.importSongs([song]);
         await ready();
         const allNotes = [...surface.querySelectorAll('aside section')].find(section => section.querySelector('h3')?.textContent === '全部笔记')!;
-        const [firstRow, secondRow] = allNotes.querySelectorAll<HTMLButtonElement>('button[data-song-key]');
+        const rows = () => [...allNotes.querySelectorAll<HTMLButtonElement>('button[data-song-key]')];
+        const [firstRow, secondRow, thirdRow] = rows();
         await act(async () => firstRow.focus()); await press(firstRow, 'ArrowDown');
         expect(surface.activeElement).toBe(secondRow);
         expect(surface.querySelector('[data-music-notes="editor"]')?.textContent).toContain('Second song');
+        await act(async () => {
+            firstRow.focus();
+            firstRow.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true, composed: true,
+            }));
+        });
+        expect((await db.list()).map(note => note.song.id)).toEqual([song.id, second.id, third.id]);
+        const dataTransfer = { setData: vi.fn() };
+        const drag = (node: HTMLElement, type: string) => node.dispatchEvent(Object.assign(
+            new MouseEvent(type, { bubbles: true, cancelable: true, clientY: 1 }), { dataTransfer }));
+        await act(async () => {
+            drag(firstRow, 'dragstart');
+            drag(thirdRow, 'dragover');
+            expect(thirdRow.dataset.insert).toBe('after');
+            drag(thirdRow, 'drop');
+        });
+        await vi.waitFor(() => expect(rows()[2]).toBe(firstRow));
+        expect(thirdRow.dataset.insert).toBeUndefined();
+        await act(async () => {
+            firstRow.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+            firstRow.click();
+        });
+        const body = surface.querySelector<HTMLTextAreaElement>('textarea')!;
+        await typeInto(body, 'Still in the same position'); await act(async () => notebook.flush(song));
+        expect((await db.list()).map(note => note.song.id)).toEqual([second.id, third.id, song.id]);
         const search = surface.querySelector<HTMLInputElement>('input[placeholder="搜索歌名、歌手、标签或笔记"]')!;
         await typeInto(search, 'missing');
         await vi.waitFor(() => expect(surface.textContent).toContain('没有找到'));
