@@ -69,3 +69,11 @@ jobs:
           fi
           gh release upload "$tag" "release/$asset" --clobber
           gh release edit "$tag" --draft=false
+
+  market:
+    needs: publish
+    permissions:
+      contents: write
+    uses: ./.github/workflows/market.yml
+    with:
+      tag: ${{ github.ref_name }}

@@ -39,7 +39,15 @@ pnpm test
 
 更新 `mod.json` 的版本号，提交并推送源码，再推送匹配的 `v<版本>` 标签。例如首版使用 `v1.0.0`。GitHub Actions 会检查版本、构建、运行测试，并把 ZIP 作为同名 GitHub Release 的附件发布。
 
-GitHub Release 提供作者构建的安装包。Folium 市场的签名是独立流程，市场目前从指定 Git 提交的目录中读取已构建的文件。[市场收录规则](https://github.com/chthollyphile/folium-compound#收录第三方模组)
+Release 发布后，Actions 会下载该版本的安装包，为解压后的 `music-notes/` 创建市场标签（例如 `market-v1.2.3`）。同仓库的 `market` 分支始终指向已同步的最新版本。预览图需要调整时，工作流会为市场生成 16:9 的副本。要补同步已有 Release，在 GitHub 的 **Actions → Sync Folium market → Run workflow** 选择 `main`，输入源码标签（例如 `v1.2.3`）。
+
+提交到 Folium 市场时，可从成功运行的 **Summary** 复制市场标签或完整提交 SHA。两者都指向该版本供审查和签名的文件。[市场收录规则](https://github.com/chthollyphile/folium-compound#收录第三方模组)
+
+| 表单项 | 填写内容 |
+| --- | --- |
+| 源码仓库 | `https://github.com/setobox/folia-music-notes` |
+| 版本 | `market-v1.2.3`（以 1.2.3 为例），或本次运行给出的市场提交 SHA |
+| 模组目录 | `music-notes` |
 
 ## 许可证
 
